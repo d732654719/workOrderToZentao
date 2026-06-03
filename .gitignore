@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 日志与运行产物
+*.log
+output/
+screenshots/
+images/
+
+# 浏览器会话/凭证（敏感，不入库）
+cookies.json
+localstorage.json
+
+# 凭证配置（首次运行会通过 config_loader 交互式填写后自动生成）
+config.json
+
+# Claude 本地配置
+.claude/
