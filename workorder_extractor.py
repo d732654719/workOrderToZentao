@@ -19,13 +19,10 @@ except ImportError as e:
 # -------------------------- 配置 --------------------------
 LOGIN_URL = "https://yun.keytop.cn/kitework/page/login2.html"  # 登录页
 
-# 登录凭证：首次运行会通过 config_loader 交互式提示填写并保存到 config.json
-from config_loader import load_or_create_config
-
-_wk_cfg = load_or_create_config().get("workorder", {})
+# 登录凭证：在 main() 中由 ensure_credentials() 填充（首次运行会逐步提示）
 LOGIN_CONFIG = {
-    "username": _wk_cfg.get("username", ""),
-    "password": _wk_cfg.get("password", ""),
+    "username": "",
+    "password": "",
 }
 
 # 状态存储路径

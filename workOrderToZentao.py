@@ -16,19 +16,17 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from zantao import ZenTaoClient, ACCOUNT
 from workorder_extractor import WorkOrderExtractor as PlaywrightExtractor, SCREENSHOTS_DIR
-from config_loader import load_or_create_config
+import workorder_extractor
+from config_loader import load_config, ensure_credentials
 
 # -------------------------- 配置参数 --------------------------
 
-# 凭证（首次运行会通过 config_loader 交互式提示填写并保存到 config.json）
-_cfg = load_or_create_config().get("zentao", {})
-
-# 禅道系统配置
+# 禅道系统配置（默认值，凭证会在 main() 中由 ensure_credentials 填充）
 ZENTAO_CONFIG = {
-    "url": _cfg.get("url", "http://zentao.hlong.cc/zentao"),
-    "account": _cfg.get("account", ACCOUNT),  # 默认 dengchang
-    "password": _cfg.get("password", ""),
-    "execution_id": _cfg.get("execution_id", 162),  # 分部非标
+    "url": "http://zentao.hlong.cc/zentao",
+    "account": ACCOUNT,        # 默认 dengchang
+    "password": "",
+    "execution_id": 162,       # 分部非标
 }
 
 # 3. 硬编码字段参数（用户指定）
@@ -489,23 +487,49 @@ def run(workorder_id: str, password: str, template_name: str = None):
     return result
 
 
+def _setup_credentials(account: str = None, password: str = None):
+    """
+    加载/补全凭证（缺失则逐步提示填写），并把结果同步到：
+      - ZENTAO_CONFIG（本模块）
+      - workorder_extractor.LOGIN_CONFIG
+    命令行显式传入的 account/password 优先于 config.json。
+    """
+    cfg = ensure_credentials(load_config())
+
+    zt = cfg.get("zentao", {})
+    ZENTAO_CONFIG["url"]          = zt.get("url", ZENTAO_CONFIG["url"])
+    ZENTAO_CONFIG["account"]      = account or zt.get("account", ZENTAO_CONFIG["account"])
+    ZENTAO_CONFIG["password"]     = password or zt.get("password", ZENTAO_CONFIG["password"])
+    ZENTAO_CONFIG["execution_id"] = zt.get("execution_id", ZENTAO_CONFIG["execution_id"])
+
+    wk = cfg.get("workorder", {})
+    workorder_extractor.LOGIN_CONFIG["username"] = wk.get("username", "")
+    workorder_extractor.LOGIN_CONFIG["password"] = wk.get("password", "")
+
+
 def main(workorder_id: str = None, password: str = None, account: str = None):
     """入口：可通过参数或交互式输入"""
     if not workorder_id:
         workorder_id = input("请输入工单编号: ").strip()
-    if not password:
-        password = ZENTAO_CONFIG.get("password", "")
-    if account:
-        ZENTAO_CONFIG["account"] = account
+    if not workorder_id:
+        print("[FAIL] 工单编号不能为空")
+        return None
 
-    return run(workorder_id, password)
+    # 第 1 步：工单编号
+    print(f"\n[步骤 1 / 2] 工单编号: {workorder_id}")
+
+    # 第 2 步：凭证（如有缺失，逐步提示填写并自动保存）
+    print("[步骤 2 / 2] 凭证检查")
+    _setup_credentials(account=account, password=password)
+
+    return run(workorder_id, password or ZENTAO_CONFIG["password"])
 
 
 if __name__ == "__main__":
-    # ↓↓↓ 可直接修改以下参数后按 F5 运行（留空则取 config.json 中的值）↓↓↓
+    # ↓↓↓ 可直接修改以下参数后按 F5 运行（留空则交互式询问）↓↓↓
     _WORKORDER_ID = "20260603J6789"
-    _ACCOUNT = ""        # 留空则取 config.json 中的 account
-    _PASSWORD = ""       # 留空则取 config.json 中的 password
+    _ACCOUNT = ""        # 留空则取 config.json / 交互输入
+    _PASSWORD = ""       # 留空则取 config.json / 交互输入
 
     if len(sys.argv) >= 3:
         result = main(sys.argv[1], sys.argv[2])
@@ -515,5 +539,6 @@ if __name__ == "__main__":
         result = main(_WORKORDER_ID, _PASSWORD or None, _ACCOUNT or None)
     else:
         print("用法: python workOrderToZentao.py <工单编号> [密码]")
-        print("示例: python workOrderToZentao.py 20260425K57602\n")
+        print("示例: python workOrderToZentao.py 20260425K57602")
+        print("说明: 首次运行会逐步提示填写凭证，已保存到 config.json\n")
         result = main()
