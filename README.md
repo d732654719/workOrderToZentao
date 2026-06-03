@@ -47,56 +47,72 @@ workOrderToZentao/
 
 ## 使用方法
 
-脚本运行时会自动分 **2 步** 完成配置（工单编号 → 凭证检查）：
+### 分两个阶段
+
+| 阶段 | 触发条件 | 运行方式 | 交互内容 |
+|---|---|---|---|
+| **首次配置** | `config.json` 缺失或不完整 | ⚠️ **必须用命令行** | 工单号 + 逐步填 4 项凭证 |
+| **日常使用** | `config.json` 已完整 | CLI 或 IDE F5 都可 | 仅工单号（凭证自动加载） |
+
+> 首次必须用命令行的原因：凭证填写包含 4 次以上 `input()`，IDE 的运行面板无 stdin 交互，提示会卡住无法响应。**后续**凭证已在 `config.json` 中，每次只问一个工单号，IDE F5 即可。
+
+### 首次配置（命令行）
+
+```bash
+python workOrderToZentao.py 20260525Y489423
+```
+
+脚本会分 2 步：
 
 ```
 [步骤 1 / 2] 工单编号: 20260525Y489423
 [步骤 2 / 2] 凭证检查
-```
+[INFO] 检测到缺失凭证：工单系统.username, 工单系统.password, 禅道.account, 禅道.password
 
-凭证检查时若 `config.json` 已存在且字段齐全，**不会重复询问**；若缺失则会逐步提示：
+============================================================
+  凭证填写（按 Enter 接受默认值或已保存值，输入新值则覆盖）
+============================================================
 
-```
 [第 1 步 / 共 2 步] 工单系统登录
   账号: ___
   密码 [***]: ___
+
 [第 2 步 / 共 2 步] 禅道登录
-  系统地址 [http://zentao.hlong.cc/zentao]: ___
-  账号 [dengchang]: ___
+  账号:     ___
   密码 [***]: ___
-  执行ID [162]: ___
+
+------------------------------------------------------------
+  本次填写的内容确认：
+  ...
+------------------------------------------------------------
+  以上信息是否正确？[Y/n]: ___
+
 [OK] 凭证已保存到 config.json，下次运行将自动加载。
 ```
 
-> 按 **Enter** 接受默认值/已保存值，输入新值则覆盖。如需重置凭证：删除 `config.json` 后重新运行。
+> 按 **Enter** 接受已保存值，输入新值则覆盖。如需重置凭证：删除 `config.json` 后重新运行。
 
-### 方式一：直接运行 / IDE F5
+### 日常使用
 
-```bash
-python workOrderToZentao.py
-# 逐步提示：工单编号 → 凭证（如缺失）
-```
-
-### 方式二：命令行参数
+**命令行**（推荐）：
 
 ```bash
-python workOrderToZentao.py 20260525Y489423              # 工单编号
-python workOrderToZentao.py 20260525Y489423 你的密码      # 工单编号 + 禅道密码（覆盖 config.json）
+python workOrderToZentao.py 20260525Y489423                          # 工单号
+python workOrderToZentao.py 20260525Y489423 你的禅道密码              # 工单号 + 临时覆盖禅道密码
+```
+```
+** IDE直接运行 workOrderToZentao.py**（凭证已存于 `config.json` 时可用）
+需要写入工单编号
+
+
 ```
 
-### 方式三：代码内填工单编号后 F5
-
-在 [workOrderToZentao.py](workOrderToZentao.py) 底部直接修改变量：
-
-```python
-_WORKORDER_ID = "20260603J6789"   # 工单编号
-_ACCOUNT = ""                     # 留空则取 config.json
-_PASSWORD = ""                    # 留空则取 config.json
-```
+> ⚠️ 若 `config.json` 不完整，直接运行 / IDE F5 会提示"必须先在命令行完成首次配置"并退出，不会卡住。
 
 ## 配置说明
 
-- `ZENTAO_CONFIG` / 工单系统凭证 — 由 `config.json` 提供，首次运行通过 `config_loader.ensure_credentials()` 逐步提示
+- **凭证**（工单系统账号/密码、禅道账号/密码）— 由 `config.json` 提供，首次运行通过 `config_loader.ensure_credentials()` 逐步提示
+- **固定配置**（禅道系统地址、禅道执行ID）— 存于 `config_loader.py` 的 `ZENTAO_URL` / `EXECUTION_ID`，不参与凭证输入
 - `HARDCODED_FIELDS` — 任务默认字段（指派给、模块、产品线、优先级等）
 - `DESCRIPTION_TEMPLATE` — 任务描述 HTML 模板
 - `BUS_CATEGORY_KEYWORDS` — 非标业务归类关键词匹配规则

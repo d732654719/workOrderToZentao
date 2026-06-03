@@ -2,11 +2,10 @@
 import json, requests, re, sys, hashlib
 sys.stdout.reconfigure(encoding='utf-8')
 
-from config_loader import load_config, ensure_credentials
+from config_loader import load_config, ensure_credentials, ZENTAO_URL
 _zcfg = ensure_credentials(load_config()).get("zentao", {})
 PWD = _zcfg.get("password", "")
 ACCOUNT = _zcfg.get("account", "dengchang")
-ZENTAO_URL = _zcfg.get("url", "http://zentao.hlong.cc/zentao")
 
 s = requests.Session()
 

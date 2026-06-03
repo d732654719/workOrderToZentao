@@ -17,16 +17,16 @@ sys.stdout.reconfigure(encoding="utf-8")
 from zantao import ZenTaoClient, ACCOUNT
 from workorder_extractor import WorkOrderExtractor as PlaywrightExtractor, SCREENSHOTS_DIR
 import workorder_extractor
-from config_loader import load_config, ensure_credentials
+from config_loader import load_config, ensure_credentials, ZENTAO_URL, EXECUTION_ID
 
 # -------------------------- 配置参数 --------------------------
 
-# 禅道系统配置（默认值，凭证会在 main() 中由 ensure_credentials 填充）
+# 禅道系统配置（url/execution_id 固定，账号密码在 main() 中由 ensure_credentials 填充）
 ZENTAO_CONFIG = {
-    "url": "http://zentao.hlong.cc/zentao",
-    "account": ACCOUNT,        # 默认 dengchang
-    "password": "",
-    "execution_id": 162,       # 分部非标
+    "url":          ZENTAO_URL,    # 固定：禅道系统地址
+    "account":      ACCOUNT,       # 默认 dengchang
+    "password":     "",
+    "execution_id": EXECUTION_ID,  # 固定：分部非标
 }
 
 # 3. 硬编码字段参数（用户指定）
@@ -490,17 +490,16 @@ def run(workorder_id: str, password: str, template_name: str = None):
 def _setup_credentials(account: str = None, password: str = None):
     """
     加载/补全凭证（缺失则逐步提示填写），并把结果同步到：
-      - ZENTAO_CONFIG（本模块）
+      - ZENTAO_CONFIG（本模块，仅 account/password）
       - workorder_extractor.LOGIN_CONFIG
     命令行显式传入的 account/password 优先于 config.json。
+    url / execution_id 为固定值，不从 config.json 读取。
     """
     cfg = ensure_credentials(load_config())
 
     zt = cfg.get("zentao", {})
-    ZENTAO_CONFIG["url"]          = zt.get("url", ZENTAO_CONFIG["url"])
-    ZENTAO_CONFIG["account"]      = account or zt.get("account", ZENTAO_CONFIG["account"])
-    ZENTAO_CONFIG["password"]     = password or zt.get("password", ZENTAO_CONFIG["password"])
-    ZENTAO_CONFIG["execution_id"] = zt.get("execution_id", ZENTAO_CONFIG["execution_id"])
+    ZENTAO_CONFIG["account"]  = account or zt.get("account", ZENTAO_CONFIG["account"])
+    ZENTAO_CONFIG["password"] = password or zt.get("password", ZENTAO_CONFIG["password"])
 
     wk = cfg.get("workorder", {})
     workorder_extractor.LOGIN_CONFIG["username"] = wk.get("username", "")
@@ -526,19 +525,43 @@ def main(workorder_id: str = None, password: str = None, account: str = None):
 
 
 if __name__ == "__main__":
-    # ↓↓↓ 可直接修改以下参数后按 F5 运行（留空则交互式询问）↓↓↓
-    _WORKORDER_ID = "20260603J6789"
-    _ACCOUNT = ""        # 留空则取 config.json / 交互输入
-    _PASSWORD = ""       # 留空则取 config.json / 交互输入
-
+    # 入口分支：
+    #   - 有 argv：CLI 显式传参，直接走 main()
+    #   - 无 argv + stdin 是 tty（交互式命令行）：走 main()，由它提示工单号/凭证
+    #   - 无 argv + stdin 不是 tty（IDE F5 / Code Runner / 管道）：
+    #       * config.json 完整 → 只问工单号
+    #       * config.json 缺失/不完整 → 提示走命令行，不进入凭证输入（避免卡住）
     if len(sys.argv) >= 3:
         result = main(sys.argv[1], sys.argv[2])
     elif len(sys.argv) == 2:
         result = main(sys.argv[1])
-    elif _WORKORDER_ID:
-        result = main(_WORKORDER_ID, _PASSWORD or None, _ACCOUNT or None)
-    else:
-        print("用法: python workOrderToZentao.py <工单编号> [密码]")
-        print("示例: python workOrderToZentao.py 20260425K57602")
-        print("说明: 首次运行会逐步提示填写凭证，已保存到 config.json\n")
+    elif sys.stdin.isatty():
+        # 交互式命令行无参：让 main() 引导工单号 → 凭证 流程
         result = main()
+    else:
+        # 非交互式（IDE F5 / Code Runner / 管道等）
+        cfg = load_config()
+        wk = cfg.get("workorder", {})
+        zt = cfg.get("zentao", {})
+        credentials_complete = all([
+            wk.get("username"), wk.get("password"),
+            zt.get("account"),  zt.get("password"),
+        ])
+
+        if not credentials_complete:
+            print("=" * 60)
+            print("  ⚠️  config.json 缺失或不完整，需先用命令行完成首次凭证填写")
+            print()
+            print("  请在终端运行：")
+            print("    python workOrderToZentao.py <工单编号>")
+            print()
+            print("  （当前环境无 stdin 交互，无法完成凭证输入）")
+            print("=" * 60)
+            sys.exit(1)
+
+        # 凭证已就绪 → 输入具体工单编号然后运行
+        workorder_id = "20260525Y489423"
+        if not workorder_id:
+            print("[FAIL] 工单编号不能为空")
+            sys.exit(1)
+        result = main(workorder_id)
