@@ -8,6 +8,7 @@
 
 import json
 import logging
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -24,14 +25,14 @@ from config_loader import load_config, ensure_credentials, ZENTAO_URL, EXECUTION
 # 禅道系统配置（url/execution_id 固定，账号密码在 main() 中由 ensure_credentials 填充）
 ZENTAO_CONFIG = {
     "url":          ZENTAO_URL,    # 固定：禅道系统地址
-    "account":      ACCOUNT,       # 默认 dengchang
+    "account":      ACCOUNT,       # 默认 yangfangfang
     "password":     "",
     "execution_id": EXECUTION_ID,  # 固定：分部非标
 }
 
 # 3. 硬编码字段参数（用户指定）
 HARDCODED_FIELDS = {
-    "assignedTo": "dengchang",       # 指派给：邓畅
+    "assignedTo": "yangfangfang",       # 杨芳芳
     "module_id": 3907,               # 所属模块ID：售后运维/工单处理
     "ProductL": "6X",                # 非标产品线：6X
     "task_type": 6,             # 任务类型：运维支持 (type=6)
@@ -250,6 +251,43 @@ class BusCategoryDetector:
         return self.default
 
 
+# -------------------------- 非标编号提取 --------------------------
+
+# 从工单进度/问题描述中匹配非标编号（按优先级）
+NON_NUMBER_PATTERNS = [
+    (r"cn\.keytop\.ns\.tc\.(\d+)", "项目代码"),           # cn.keytop.ns.tc.1031876 → 1031876
+    (r"FB_(\d+)", "FB下划线"),                            # ...对接FB_1061434 → 1061434
+    (r"_FB(\d+)", "后缀_FB"),                              # ...支付_FB79167 → 79167
+    (r"(?<![A-Za-z0-9_])FB(\d+)", "FB前缀"),              # FB79167出口... → 79167
+]
+
+
+def _task_text_blob(task_info: dict) -> str:
+    """合并问题描述与全部进度文本，供非标编号检索"""
+    parts = [
+        task_info.get("problem", ""),
+        task_info.get("full_progress", ""),
+    ]
+    for entry in task_info.get("progress_entries", []):
+        if isinstance(entry, dict):
+            parts.append(entry.get("description", ""))
+            parts.append(entry.get("notes", ""))
+    return "\n".join(parts)
+
+
+def extract_non_number(task_info: dict) -> str:
+    """从工单内容提取禅道「非标编号」(NonNumber)"""
+    text = _task_text_blob(task_info)
+    for pattern, label in NON_NUMBER_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            number = m.group(1)
+            logger.info(f"非标编号 自动识别: {label} → {number}")
+            return number
+    logger.info("非标编号 未在进度/问题描述中匹配到")
+    return ""
+
+
 # -------------------------- 禅道任务创建器 --------------------------
 
 class ZentaoTaskCreator:
@@ -293,6 +331,7 @@ class ZentaoTaskCreator:
 
         # 任务描述：按模板填充工单内容，嵌入在线图片URL（<img>标签）
         task_desc = self._format_description(task_info)
+        non_number = extract_non_number(task_info)
 
         fields = {
             "execution_id": self.execution_id,
@@ -303,6 +342,7 @@ class ZentaoTaskCreator:
             "task_type": HARDCODED_FIELDS["task_type"],
             "type_of": HARDCODED_FIELDS["type_of"],
             "belong_no": workorder_id,
+            "non_number": non_number,
             "product_l": HARDCODED_FIELDS["ProductL"],
             "bus_category": bus_category,
             "module_id": HARDCODED_FIELDS["module_id"],
@@ -400,6 +440,7 @@ class ZentaoTaskCreator:
                     desc=desc,
                     type_of=fields.get("type_of", 8),
                     belong_no=fields.get("belong_no", ""),
+                    non_number=fields.get("non_number", ""),
                     product_l=product_l,
                     bus_category=bus_category,
                     task_type=task_type,
@@ -465,6 +506,7 @@ def run(workorder_id: str, password: str, template_name: str = None):
     print(f"  任务名称: {fields['name']}")
     print(f"  指派给: {fields['assigned_to']}")
     print(f"  归属编号: {fields['belong_no']}")
+    print(f"  非标编号: {fields.get('non_number') or '(未识别)'}")
     print(f"  非标产品线: {fields['product_l']}")
     print(f"  非标业务归类: {fields['bus_category']}")
     print(f"  模块ID: {fields['module_id']}")
@@ -525,21 +567,22 @@ def main(workorder_id: str = None, password: str = None, account: str = None):
 
 
 if __name__ == "__main__":
+    # ↓↓↓ IDE F5 运行时可修改工单编号 ↓↓↓
+    _WORKORDER_ID = "20260604L40446"
+
     # 入口分支：
     #   - 有 argv：CLI 显式传参，直接走 main()
     #   - 无 argv + stdin 是 tty（交互式命令行）：走 main()，由它提示工单号/凭证
     #   - 无 argv + stdin 不是 tty（IDE F5 / Code Runner / 管道）：
-    #       * config.json 完整 → 只问工单号
+    #       * config.json 完整 → 只问工单号（或使用 _WORKORDER_ID）
     #       * config.json 缺失/不完整 → 提示走命令行，不进入凭证输入（避免卡住）
     if len(sys.argv) >= 3:
         result = main(sys.argv[1], sys.argv[2])
     elif len(sys.argv) == 2:
         result = main(sys.argv[1])
     elif sys.stdin.isatty():
-        # 交互式命令行无参：让 main() 引导工单号 → 凭证 流程
         result = main()
     else:
-        # 非交互式（IDE F5 / Code Runner / 管道等）
         cfg = load_config()
         wk = cfg.get("workorder", {})
         zt = cfg.get("zentao", {})
@@ -559,8 +602,7 @@ if __name__ == "__main__":
             print("=" * 60)
             sys.exit(1)
 
-        # 凭证已就绪 → 输入具体工单编号然后运行
-        workorder_id = "20260525Y489423"
+        workorder_id = _WORKORDER_ID
         if not workorder_id:
             print("[FAIL] 工单编号不能为空")
             sys.exit(1)

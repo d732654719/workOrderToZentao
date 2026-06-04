@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 ZENTAO_URL = "http://zentao.hlong.cc/zentao"
-ACCOUNT = "dengchang"
+ACCOUNT = "yangfangfang"
 
 # 图片扩展名 → MIME 类型映射（供文件上传和附件预览使用）
 MIME_MAP = {
@@ -413,8 +413,9 @@ class ZenTaoClient:
     def update_task_session(self, task_id: int, execution_id: int,
                             module_id: int = None, assigned_to: str = None,
                             type_of: int = 8, belong_no: str = "",
-                            product_l: str = "", bus_category: str = "",
-                            task_type: int = 6, desc: str = "") -> dict:
+                            non_number: str = "", product_l: str = "",
+                            bus_category: str = "", task_type: int = 6,
+                            desc: str = "") -> dict:
         """通过 Session 编辑页 POST 补设 module/assignedTo（须传入 desc 避免覆盖为空）"""
         edit_url = f"{self.base_url}/task-edit-{task_id}.html"
         form_data = self._load_task_edit_form(task_id)
@@ -425,6 +426,8 @@ class ZenTaoClient:
         form_data.setdefault("pri", "3")
         form_data["TypeOf"] = str(type_of)
         form_data["BelongNO"] = belong_no or form_data.get("BelongNO", "")
+        if non_number:
+            form_data["NonNumber"] = non_number
         if product_l:
             form_data["ProductL"] = product_l
         if bus_category:
@@ -443,8 +446,9 @@ class ZenTaoClient:
 
         print(f"[update_task_session] POST: module={form_data.get('module')}, "
               f"estStarted={today}, deadline={today}, "
-              f"assignedTo={form_data.get('assignedTo')}, TypeOf={form_data.get('TypeOf')}, "
-              f"BelongNO={form_data.get('BelongNO')}, 字段数={len(form_data)}")
+              f"assignedTo={form_data.get('assignedTo')}, NonNumber={form_data.get('NonNumber', '')}, "
+              f"TypeOf={form_data.get('TypeOf')}, BelongNO={form_data.get('BelongNO')}, "
+              f"字段数={len(form_data)}")
 
         r = self.session.post(
             edit_url,
