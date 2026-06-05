@@ -255,7 +255,7 @@ class BusCategoryDetector:
 
 # 从工单进度/问题描述中匹配非标编号（按优先级）
 NON_NUMBER_PATTERNS = [
-    (r"cn\.keytop\.ns\.tc\.(\d+)", "项目代码"),           # cn.keytop.ns.tc.1031876 → 1031876
+    (r"cn\.keytop\.ns\.\w+\.(\d+)", "项目代码"),          # cn.keytop.ns.tc/api/... → 末段数字
     (r"FB_(\d+)", "FB下划线"),                            # ...对接FB_1061434 → 1061434
     (r"_FB(\d+)", "后缀_FB"),                              # ...支付_FB79167 → 79167
     (r"(?<![A-Za-z0-9_])FB(\d+)", "FB前缀"),              # FB79167出口... → 79167
