@@ -10,7 +10,7 @@
 
 1. **提取工单** — Playwright 浏览器自动化登录工单系统，提取问题描述、处理进度、截图/附件
 2. **匹配模板** — 自动识别非标业务归类（BusCategory），按"非标售后运维模板"填充描述
-3. **创建禅道任务** — 调用禅道 REST API 创建任务，并补设指派/模块等标准字段
+3. **创建禅道任务** — 调用禅道 REST API 创建任务，并补设指派/模块等标准字段（支持自定义指派给）
 
 ## 依赖
 
@@ -97,14 +97,17 @@ python workOrderToZentao.py 20260525Y489423
 **命令行**（推荐）：
 
 ```bash
-python workOrderToZentao.py 20260525Y489423                          # 工单号
-python workOrderToZentao.py 20260525Y489423 你的禅道密码              # 工单号 + 临时覆盖禅道密码
+python workOrderToZentao.py 20260525Y489423                          # 工单号（指派给默认 = 禅道账号）
+python workOrderToZentao.py 20260525Y489423 dengchang             # 工单号 + 指派给
 ```
-```
-** IDE直接运行 workOrderToZentao.py**（凭证已存于 `config.json` 时可用）
-需要写入工单编号
 
+**IDE 直接运行 `workOrderToZentao.py`**（凭证已存于 `config.json` 时可用）：
 
+在文件底部的 `if __name__ == "__main__":` 块中修改两个变量后按 F5 运行：
+
+```python
+_WORKORDER_ID = "20260610J17132"  # 必填：工单编号
+_ASSIGNED_TO  = "dengchang"    # 选填：留空时指派给 = 禅道账号
 ```
 
 > ⚠️ 若 `config.json` 不完整，直接运行 / IDE F5 会提示"必须先在命令行完成首次配置"并退出，不会卡住。
@@ -112,9 +115,18 @@ python workOrderToZentao.py 20260525Y489423 你的禅道密码              # �
 ## 配置说明
 
 - **凭证**（工单系统账号/密码、禅道账号/密码）— 由 `config.json` 提供，首次运行通过 `config_loader.ensure_credentials()` 逐步提示
+- **指派给** — 优先级：命令行参数 > `_ASSIGNED_TO` 变量 > `config.json` 中 `zentao.assignedTo` > 禅道账号
 - **固定配置**（禅道系统地址、禅道执行ID）— 存于 `config_loader.py` 的 `ZENTAO_URL` / `EXECUTION_ID`，不参与凭证输入
-- `HARDCODED_FIELDS` — 任务默认字段（指派给、模块、产品线、优先级等）
+- `HARDCODED_FIELDS` — 任务默认字段（模块、产品线、优先级等，不含指派给）
 - `DESCRIPTION_TEMPLATE` — 任务描述 HTML 模板
 - `BUS_CATEGORY_KEYWORDS` — 非标业务归类关键词匹配规则
+
+  也可在 `config.json` 中手动添加 `"assignedTo"` 字段指定默认指派对象：
+  ```json
+  {
+    "workorder": { "username": "...", "password": "..." },
+    "zentao": { "account": "dengchang", "password": "...", "assignedTo": "yangfangfang" }
+  }
+  ```
 
 凭证仅保存在本地 `config.json`（已加入 `.gitignore`），不会推送到 Git。
