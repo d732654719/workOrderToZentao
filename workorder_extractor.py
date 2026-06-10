@@ -31,6 +31,8 @@ COOKIES_FILE = STATE_DIR / "cookies.json"
 LOCALSTORAGE_FILE = STATE_DIR / "localstorage.json"
 SCREENSHOTS_DIR = STATE_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
+IMAGES_DIR = STATE_DIR / "images"
+IMAGES_DIR.mkdir(exist_ok=True)
 
 # 日志
 logging.basicConfig(
@@ -1153,18 +1155,23 @@ class WorkOrderExtractor:
             imgs = self.page.evaluate('''() => {
                 const results = [];
                 const allImgs = document.querySelectorAll('img');
+                // 图片后缀（允许 URL 后面带 ?query&hash，过 .jpg 即可，不必在末尾）
+                const imgExt = /\\.(jpe?g|png|gif|bmp|webp)(\\?|$|#)/i;
+                // 常见图床/对象存储域名/路径片段（白名单，而非硬性要求）
+                const cdnHint = /(saas-obs|upload|temp|oss|obs|keytop|hicloud|kitework)/i;
                 allImgs.forEach(img => {
                     const src = img.getAttribute('src') || '';
                     const alt = img.getAttribute('alt') || '';
-                    if (src && src.startsWith('http')
-                        && !src.includes('icon') && !src.includes('logo')
-                        && !src.includes('svg') && !src.includes('no-handle-order')
-                        && (src.includes('saas-obs') || src.includes('upload') || src.includes('temp')
-                            || /\.(jpe?g|png|gif|bmp|webp)$/i.test(src))) {
-                        const rect = img.getBoundingClientRect();
-                        if (rect.width > 50 && rect.height > 30) {
-                            results.push({src: src, alt: alt});
-                        }
+                    if (!src || !src.startsWith('http')) return;
+                    // 过滤纯装饰图
+                    if (src.includes('icon') || src.includes('logo')
+                        || src.includes('svg') || src.includes('no-handle-order')
+                        || src.startsWith('data:')) return;
+                    // 后缀匹配 OR CDN 关键字匹配，二选一即可
+                    if (!imgExt.test(src) && !cdnHint.test(src)) return;
+                    const rect = img.getBoundingClientRect();
+                    if (rect.width > 50 && rect.height > 30) {
+                        results.push({src: src, alt: alt});
                     }
                 });
                 return JSON.stringify(results);
@@ -1179,6 +1186,87 @@ class WorkOrderExtractor:
             logger.warning(f"获取进度附件URL失败: {e}")
 
         return attachments
+
+    @staticmethod
+    def _ext_from_url(url: str) -> str:
+        """从 URL 路径推断图片扩展名"""
+        path = url.split("?")[0].split("#")[0].lower()
+        for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            if path.endswith(ext):
+                return ext if ext != ".jpeg" else ".jpg"
+        return ".png"
+
+    @staticmethod
+    def _detect_image_ext(data: bytes) -> str | None:
+        """根据文件头判断真实图片格式"""
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return ".gif"
+        if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+            return ".webp"
+        return None
+
+    def _download_image(self, url: str, save_path: Path) -> str | None:
+        """用浏览器会话下载图片，成功返回实际保存路径"""
+        url = url.replace("&amp;", "&")
+        try:
+            response = self.page.request.get(url)
+            if not response.ok:
+                logger.warning(f"下载图片 HTTP {response.status}: {url[:120]}")
+                return None
+            body = response.body()
+            if not body:
+                return None
+            real_ext = self._detect_image_ext(body)
+            if not real_ext:
+                logger.warning(f"下载内容不是有效图片: {url[:120]}")
+                return None
+            if save_path.suffix.lower() != real_ext:
+                save_path = save_path.with_suffix(real_ext)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(body)
+            if save_path.stat().st_size > 0:
+                return str(save_path)
+            return None
+        except Exception as e:
+            logger.warning(f"下载图片失败 {url[:120]}: {e}")
+            return None
+
+    def _download_images_for_items(
+        self, items: list, workorder_id: str, prefix: str,
+        src_to_path: dict[str, str] | None = None,
+    ) -> list:
+        """下载图片列表到本地，为每项补充 local_path 字段"""
+        if not items:
+            return items
+        img_dir = IMAGES_DIR / workorder_id
+        cache = src_to_path if src_to_path is not None else {}
+        updated = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                updated.append(item)
+                continue
+            src = (item.get("src") or "").replace("&amp;", "&")
+            if not src or not src.startswith("http"):
+                updated.append(item)
+                continue
+            entry = dict(item)
+            if src in cache:
+                entry["local_path"] = cache[src]
+                updated.append(entry)
+                continue
+            ext = self._ext_from_url(src)
+            local_path = img_dir / f"{prefix}_{i:02d}{ext}"
+            saved = self._download_image(src, local_path)
+            if saved:
+                entry["local_path"] = saved
+                cache[src] = saved
+                logger.info(f"图片已下载: {Path(saved).name}")
+            updated.append(entry)
+        return updated
 
     def extract_extra_image_urls(self, skip_urls: set = None) -> list:
         """提取页面中不在进度附件中的其他图片URL（不下载到本地）"""
@@ -1225,17 +1313,23 @@ class WorkOrderExtractor:
         # 3. 提取关键信息
         info = self.extract_workorder_info()
 
-        # 收集已提取的进度附件URL，避免重复
-        progress_urls = {a.get("src", "") for a in info.get("progress_attachments", [])}
+        wo_id = info.get("workorder_id", workorder_id or "unknown")
+        src_to_path: dict[str, str] = {}
+        problem_images = self._download_images_for_items(
+            info.get("problem_image_urls", []), wo_id, "problem", src_to_path
+        )
+        progress_images = self._download_images_for_items(
+            info.get("progress_attachments", []), wo_id, "progress", src_to_path
+        )
 
         result = {
-            "workorder_id": info.get("workorder_id", ""),
+            "workorder_id": wo_id,
             "parking_name": info.get("parking_name", ""),
             "parking_id": info.get("parking_id", ""),
             "problem": info.get("problem", ""),
-            "problem_image_urls": info.get("problem_image_urls", []),
+            "problem_image_urls": problem_images,
             "progress_entries": info.get("progress_entries", []),
-            "progress_attachments": info.get("progress_attachments", []),
+            "progress_attachments": progress_images,
             "extract_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "url": self.page.url
         }

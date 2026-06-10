@@ -8,12 +8,12 @@ import json
 import hashlib
 import re
 import time
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import requests
 
 ZENTAO_URL = "http://zentao.hlong.cc/zentao"
-ACCOUNT = "yangfangfang"
+ACCOUNT = "dengchang"
 
 # 图片扩展名 → MIME 类型映射（供文件上传和附件预览使用）
 MIME_MAP = {
@@ -154,9 +154,10 @@ class ZenTaoClient:
         return at == assigned_to
 
     def upload_file_rest(self, filepath: str) -> dict:
-        """通过 REST API v1 上传文件，返回 {id, pathname, extension, ...}
+        """上传图片到禅道文件库，供正文 <img> 内联引用。
 
-        上传后的文件可通过 <img src="{base_url}/file-read-{id}.{ext}"> 引用
+        REST v1 POST /files 底层调用 file::ajaxUpload，文件字段必须为 imgFile。
+        失败时回退 Session 接口 file-ajaxUpload.html。
         """
         import os
 
@@ -165,37 +166,103 @@ class ZenTaoClient:
 
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
-        mime = MIME_MAP.get(ext, "application/octet-stream")
+        mime = MIME_MAP.get(ext, "image/png")
 
+        print(f"    File: {filename} ({os.path.getsize(filepath)}B, mime={mime})")
+
+        result = self._upload_image_rest(filepath, filename, mime)
+        if isinstance(result, dict) and result.get("id"):
+            return result
+
+        print(f"    [REST imgFile] 失败: {result}")
+        result = self._upload_image_session(filepath, filename, mime)
+        if isinstance(result, dict) and result.get("id"):
+            return result
+
+        print(f"    [Session ajaxUpload] 失败: {result}")
+        return result if isinstance(result, dict) else {"error": "all_attempts_failed"}
+
+    def _upload_image_rest(self, filepath: str, filename: str, mime: str) -> dict:
+        """REST v1: POST /api.php/v1/files，字段 imgFile"""
         url = f"{self.base_url}/api.php/v1/files"
         print(f"    URL: {url}")
         print(f"    Token: {self.token[:16]}...")
-        print(f"    File: {filename} ({os.path.getsize(filepath)}B, mime={mime})")
+        try:
+            with open(filepath, "rb") as fh:
+                files = [("imgFile", (filename, fh, mime))]
+                result = self._rest_post_multipart("files", {}, files)
+            print(f"    [REST imgFile] {json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)[:200]}")
+            return self._normalize_upload_result(result)
+        except Exception as e:
+            print(f"    [REST imgFile] 异常: {e}")
+            return {"error": str(e)}
 
-        # 尝试多种参数组合（ZenTao 不同版本字段名可能不同）
-        attempts = [
-            # (form_data, file_field_name, label)
-            ({}, "files", "files"),
-            ({}, "file", "file"),
-        ]
-
-        for form_data, field_name, label in attempts:
+    def _upload_image_session(self, filepath: str, filename: str, mime: str) -> dict:
+        """Session: POST /file-ajaxUpload.html，字段 imgFile（富文本编辑器同款）"""
+        url = f"{self.base_url}/file-ajaxUpload.html"
+        print(f"    URL: {url} (Session)")
+        try:
+            with open(filepath, "rb") as fh:
+                r = self.session.post(
+                    url,
+                    files={"imgFile": (filename, fh, mime)},
+                    headers={"Referer": url},
+                )
+            print(f"    [Session ajaxUpload] status={r.status_code} body={r.text[:200]}")
             try:
-                with open(filepath, "rb") as fh:
-                    files = [(field_name, (filename, fh, mime))]
-                    result = self._rest_post_multipart("files", form_data, files)
-                print(f"    [{label}] {json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)[:200]}")
-                if isinstance(result, dict) and result.get("id"):
-                    return result
-                if isinstance(result, dict) and "error" not in str(result).lower():
-                    # 没有 error 但有其他内容，可能成功了
-                    return result
-            except Exception as e:
-                print(f"    [{label}] 异常: {e}")
-                continue
+                data = r.json()
+            except json.JSONDecodeError:
+                return {"error": "invalid_json", "_raw": r.text[:300]}
+            return self._normalize_upload_result(data)
+        except Exception as e:
+            print(f"    [Session ajaxUpload] 异常: {e}")
+            return {"error": str(e)}
 
-        # 所有尝试都失败
-        return result if 'result' in dir() else {"error": "all_attempts_failed"}
+    @staticmethod
+    def _normalize_upload_result(data: dict) -> dict:
+        """统一 REST / Session 上传响应为 {id, url, extension}"""
+        if not isinstance(data, dict):
+            return {"error": "invalid_response"}
+        if data.get("error") and not data.get("id"):
+            return data
+        # REST 直接返回 {id, url}
+        file_id = data.get("id")
+        url = data.get("url", "")
+        # Session 旧格式 {error: 0, url: ...} 或嵌套 data
+        if not file_id and data.get("error") == 0 and url:
+            m = re.search(r"file-read-(\d+)", url)
+            if m:
+                file_id = int(m.group(1))
+        nested = data.get("data")
+        if not file_id and isinstance(nested, dict):
+            file_id = nested.get("id")
+            url = url or nested.get("url", "")
+        if file_id:
+            ext = ""
+            if url:
+                m = re.search(r"file-read-\d+\.(\w+)", url)
+                if m:
+                    ext = f".{m.group(1)}"
+            return {"id": file_id, "url": url, "extension": ext}
+        return data
+
+    def build_file_read_url(self, upload_result: dict, fallback_ext: str = ".png") -> str:
+        """根据文件上传结果构造正文内联引用的 file-read URL"""
+        url = upload_result.get("url", "")
+        if url:
+            if url.startswith("/"):
+                parsed_base = urlparse(self.base_url)
+                return f"{parsed_base.scheme}://{parsed_base.netloc}{url}"
+            if url.startswith("http"):
+                return url
+
+        file_id = upload_result.get("id")
+        if not file_id:
+            return ""
+        ext = upload_result.get("extension") or fallback_ext
+        if ext and not str(ext).startswith("."):
+            ext = f".{ext}"
+        return f"{self.base_url}/file-read-{file_id}{ext}"
 
     def get_products_rest(self) -> list:
         """通过 REST API v1 获取产品列表"""
