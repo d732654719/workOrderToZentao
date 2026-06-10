@@ -12,27 +12,33 @@ import re
 import shutil
 import sys
 from datetime import datetime
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 from zantao import ZenTaoClient, ACCOUNT
-from workorder_extractor import WorkOrderExtractor as PlaywrightExtractor, SCREENSHOTS_DIR
+from workorder_extractor import (
+    WorkOrderExtractor as PlaywrightExtractor,
+    SCREENSHOTS_DIR,
+    IMAGES_DIR,
+)
 import workorder_extractor
 from config_loader import load_config, ensure_credentials, ZENTAO_URL, EXECUTION_ID
 
 # -------------------------- 配置参数 --------------------------
 
 # 禅道系统配置（url/execution_id 固定，账号密码在 main() 中由 ensure_credentials 填充）
+# assignedTo 默认等于 account（可被 main()/run() 显式覆盖）
 ZENTAO_CONFIG = {
     "url":          ZENTAO_URL,    # 固定：禅道系统地址
-    "account":      ACCOUNT,       # 默认 yangfangfang
+    "account":      ACCOUNT,       # 默认 dengchang
     "password":     "",
     "execution_id": EXECUTION_ID,  # 固定：分部非标
+    "assignedTo":   ACCOUNT,       # 默认与 account 相同
 }
 
-# 3. 硬编码字段参数（用户指定）
+# 3. 硬编码字段参数（用户指定，与登录账号无关）
 HARDCODED_FIELDS = {
-    "assignedTo": "yangfangfang",       # 杨芳芳
     "module_id": 3907,               # 所属模块ID：售后运维/工单处理
     "ProductL": "6X",                # 非标产品线：6X
     "task_type": 6,             # 任务类型：运维支持 (type=6)
@@ -295,6 +301,12 @@ class ZentaoTaskCreator:
 
     def __init__(self, config=None):
         self.config = config or ZENTAO_CONFIG
+        # 指派给：默认与登录 account 相同；HARDCODED_FIELDS 旧值作为兜底
+        self.assigned_to = (
+            self.config.get("assignedTo")
+            or self.config.get("account")
+            or HARDCODED_FIELDS.get("assignedTo", "dengchang")
+        )
         self.client = ZenTaoClient(self.config["url"])
         self.execution_id = self.config["execution_id"]
 
@@ -329,7 +341,7 @@ class ZentaoTaskCreator:
         # 任务名称：工单编号 + 项目名称（车场ID）车场名称
         task_name = f"工单编号：{workorder_id} 项目名称：({parking_id}){parking_name}"
 
-        # 任务描述：按模板填充工单内容，嵌入在线图片URL（<img>标签）
+        # 任务描述：按模板填充工单内容，嵌入禅道 file-read 图片 URL
         task_desc = self._format_description(task_info)
         non_number = extract_non_number(task_info)
 
@@ -337,7 +349,7 @@ class ZentaoTaskCreator:
             "execution_id": self.execution_id,
             "name": task_name,
             "desc": task_desc,
-            "assigned_to": HARDCODED_FIELDS["assignedTo"],
+            "assigned_to": self.assigned_to,
             "priority": HARDCODED_FIELDS["priority"],
             "task_type": HARDCODED_FIELDS["task_type"],
             "type_of": HARDCODED_FIELDS["type_of"],
@@ -346,30 +358,55 @@ class ZentaoTaskCreator:
             "product_l": HARDCODED_FIELDS["ProductL"],
             "bus_category": bus_category,
             "module_id": HARDCODED_FIELDS["module_id"],
-            "estimate": 2.0,
+            "estimate": 0.5,
         }
 
         return fields
 
     @staticmethod
-    def _collect_image_urls(task_info: dict) -> list[str]:
-        """从 problem_image_urls 和 progress_attachments 中提取去重在线图片 URL"""
+    def _collect_local_image_paths(task_info: dict) -> list[str]:
+        """从已下载的图片条目中收集本地路径（去重、保序）"""
         seen = set()
-        urls = []
+        paths = []
         for key in ("problem_image_urls", "progress_attachments"):
             for att in task_info.get(key, []):
-                if isinstance(att, dict):
-                    src = att.get("src", "")
-                    if src and src.startswith("http") and src not in seen:
-                        seen.add(src)
-                        urls.append(src)
-        print(f"[format] 收集到 {len(urls)} 个在线图片URL")
-        return urls
+                if not isinstance(att, dict):
+                    continue
+                local = att.get("local_path", "")
+                if local and local not in seen:
+                    seen.add(local)
+                    paths.append(local)
+        return paths
+
+    def upload_task_images(self, task_info: dict) -> list[str]:
+        """将本地图片上传到禅道文件库，返回可用于正文 <img> 的 file-read URL 列表"""
+        zentao_urls = []
+        local_paths = self._collect_local_image_paths(task_info)
+        print(f"[upload] 待上传图片: {len(local_paths)} 张")
+        for local_path in local_paths:
+            path = Path(local_path)
+            if not path.is_file():
+                logger.warning(f"本地图片不存在，跳过: {local_path}")
+                continue
+            ext = path.suffix.lower()
+            result = self.client.upload_file_rest(str(path))
+            if not result.get("id"):
+                logger.warning(f"禅道上传失败: {path.name} → {result}")
+                print(f"  [WARN] 上传失败: {path.name}")
+                continue
+            url = self.client.build_file_read_url(
+                result, fallback_ext=ext or ".png"
+            )
+            if url:
+                zentao_urls.append(url)
+                print(f"  [OK] {path.name} → {url}")
+        print(f"[upload] 成功上传 {len(zentao_urls)}/{len(local_paths)} 张")
+        return zentao_urls
 
     def _format_description(self, task_info: dict) -> str:
         """格式化工单内容为禅道任务描述HTML
 
-        优先使用在线图片 URL 嵌入 <img> 标签；若无在线 URL 则降级为 files[] 附件上传。
+        图片使用禅道 file-read 永久 URL 内联嵌入正文（非任务附件）。
         """
         problem = task_info.get("problem", "")
         extract_time = task_info.get("extract_time", "")
@@ -389,15 +426,14 @@ class ZentaoTaskCreator:
         if latest_text:
             problem_html += f"<p><strong>最新处理进度：</strong>{latest_text}</p>"
 
-        # 优先嵌入在线图片 URL（从工单系统 HTML 中提取的 src 属性）
-        image_urls = self._collect_image_urls(task_info)
+        image_urls = task_info.get("zentao_image_urls", [])
         if image_urls:
             problem_html += "<p><strong>相关截图：</strong></p>"
             for url in image_urls:
                 problem_html += f'<img src="{url}" style="max-width:100%;margin:4px 0;" />'
 
         print(f"[format] problem={len(problem)}chars, latest={len(latest_text)}chars, "
-              f"online_images={len(image_urls)}")
+              f"inline_images={len(image_urls)}")
 
         body = DESCRIPTION_TEMPLATE.format(problem=problem_html)
 
@@ -461,17 +497,23 @@ class ZentaoTaskCreator:
 
 # -------------------------- 主流程 --------------------------
 
-def run(workorder_id: str, password: str, template_name: str = None):
+def run(workorder_id: str, password: str, assigned_to: str = None, template_name: str = None):
     """完整流程：提取工单 → 匹配模板 → 创建禅道任务
 
     Args:
         workorder_id: 工单编号
         password: 禅道登录密码
+        assigned_to: 指派给账号，默认与 ZENTAO_CONFIG.account 相同
         template_name: 模板名称，默认 "非标售后运维模板"
     """
+    # 显式传入的 assigned_to 覆盖配置
+    if assigned_to:
+        ZENTAO_CONFIG["assignedTo"] = assigned_to
+
     print(f"\n{'='*50}")
     print(f"工单 → 禅道任务 同步开始")
     print(f"工单编号: {workorder_id}")
+    print(f"指派给: {ZENTAO_CONFIG.get('assignedTo', ZENTAO_CONFIG['account'])}")
     print(f"模板: {template_name or '非标售后运维模板'}")
     print(f"{'='*50}\n")
 
@@ -484,6 +526,8 @@ def run(workorder_id: str, password: str, template_name: str = None):
         return None
     print(f"  [OK] 工单提取成功: {task_info['parking_name']}")
     print(f"    问题: {task_info['problem'][:60]}...")
+    local_images = ZentaoTaskCreator._collect_local_image_paths(task_info)
+    print(f"    已下载图片: {len(local_images)} 张")
 
     # Step 2: 自动识别非标业务归类(BusCategory) + 匹配描述模板
     print("\n[Step 2/3] 自动识别非标业务归类 & 匹配模板...")
@@ -500,6 +544,9 @@ def run(workorder_id: str, password: str, template_name: str = None):
     if not creator.login(password):
         print("[FAIL] 禅道登录失败，终止流程")
         return None
+
+    # 上传图片到禅道文件库，获取正文内联 URL
+    task_info["zentao_image_urls"] = creator.upload_task_images(task_info)
 
     # 构造并创建
     fields = creator.build_task_data(task_info, bus_category)
@@ -523,32 +570,44 @@ def run(workorder_id: str, password: str, template_name: str = None):
             shutil.rmtree(screenshots_dir)
             screenshots_dir.mkdir(exist_ok=True)
             print(f"    [清理] screenshots 目录已清空")
+        wo_img_dir = IMAGES_DIR / workorder_id
+        if wo_img_dir.exists():
+            shutil.rmtree(wo_img_dir)
+            print(f"    [清理] images/{workorder_id} 已清空")
     else:
         print("\n  [FAIL] 禅道任务创建失败，请查看日志")
 
     return result
 
 
-def _setup_credentials(account: str = None, password: str = None):
+def _setup_credentials(account: str = None, password: str = None, assigned_to: str = None):
     """
     加载/补全凭证（缺失则逐步提示填写），并把结果同步到：
-      - ZENTAO_CONFIG（本模块，仅 account/password）
+      - ZENTAO_CONFIG（本模块，account/password/assignedTo）
       - workorder_extractor.LOGIN_CONFIG
-    命令行显式传入的 account/password 优先于 config.json。
+    命令行显式传入的 account/password/assigned_to 优先于 config.json。
+    assignedTo 缺省时回退为 account。
     url / execution_id 为固定值，不从 config.json 读取。
     """
     cfg = ensure_credentials(load_config())
 
     zt = cfg.get("zentao", {})
-    ZENTAO_CONFIG["account"]  = account or zt.get("account", ZENTAO_CONFIG["account"])
-    ZENTAO_CONFIG["password"] = password or zt.get("password", ZENTAO_CONFIG["password"])
+    ZENTAO_CONFIG["account"]    = account or zt.get("account", ZENTAO_CONFIG["account"])
+    ZENTAO_CONFIG["password"]   = password or zt.get("password", ZENTAO_CONFIG["password"])
+    # 指派给：显式 > config.json > account
+    ZENTAO_CONFIG["assignedTo"] = (
+        assigned_to
+        or zt.get("assignedTo")
+        or ZENTAO_CONFIG["account"]
+    )
 
     wk = cfg.get("workorder", {})
     workorder_extractor.LOGIN_CONFIG["username"] = wk.get("username", "")
     workorder_extractor.LOGIN_CONFIG["password"] = wk.get("password", "")
 
 
-def main(workorder_id: str = None, password: str = None, account: str = None):
+def main(workorder_id: str = None, password: str = None, account: str = None,
+         assigned_to: str = None):
     """入口：可通过参数或交互式输入"""
     if not workorder_id:
         workorder_id = input("请输入工单编号: ").strip()
@@ -561,14 +620,15 @@ def main(workorder_id: str = None, password: str = None, account: str = None):
 
     # 第 2 步：凭证（如有缺失，逐步提示填写并自动保存）
     print("[步骤 2 / 2] 凭证检查")
-    _setup_credentials(account=account, password=password)
+    _setup_credentials(account=account, password=password, assigned_to=assigned_to)
 
-    return run(workorder_id, password or ZENTAO_CONFIG["password"])
+    return run(workorder_id, password or ZENTAO_CONFIG["password"], assigned_to=assigned_to)
 
 
 if __name__ == "__main__":
-    # ↓↓↓ IDE F5 运行时可修改工单编号 ↓↓↓
-    _WORKORDER_ID = "20260604L40446"
+    # ↓↓↓ IDE F5 运行时可修改 ↓↓↓
+    _WORKORDER_ID = "20260610J17132"  # 必填：工单编号
+    _ASSIGNED_TO  = "yangfangfang"         # 选填：留空时指派给 = account；填写后覆盖 account
 
     # 入口分支：
     #   - 有 argv：CLI 显式传参，直接走 main()
@@ -576,9 +636,15 @@ if __name__ == "__main__":
     #   - 无 argv + stdin 不是 tty（IDE F5 / Code Runner / 管道）：
     #       * config.json 完整 → 只问工单号（或使用 _WORKORDER_ID）
     #       * config.json 缺失/不完整 → 提示走命令行，不进入凭证输入（避免卡住）
+    # CLI 用法（密码不在命令行传，走 config.json 或交互输入）：
+    #   python workOrderToZentao.py                       # 交互式
+    #   python workOrderToZentao.py <工单编号>            # 指派给默认等于 account
+    #   python workOrderToZentao.py <工单编号> <指派>     # 自定义指派给
     if len(sys.argv) >= 3:
-        result = main(sys.argv[1], sys.argv[2])
+        # <工单号> <指派>
+        result = main(sys.argv[1], assigned_to=sys.argv[2])
     elif len(sys.argv) == 2:
+        # <工单号>
         result = main(sys.argv[1])
     elif sys.stdin.isatty():
         result = main()
@@ -606,4 +672,4 @@ if __name__ == "__main__":
         if not workorder_id:
             print("[FAIL] 工单编号不能为空")
             sys.exit(1)
-        result = main(workorder_id)
+        result = main(workorder_id, assigned_to=_ASSIGNED_TO or None)
