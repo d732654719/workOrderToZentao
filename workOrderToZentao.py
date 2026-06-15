@@ -430,7 +430,11 @@ class ZentaoTaskCreator:
         if image_urls:
             problem_html += "<p><strong>相关截图：</strong></p>"
             for url in image_urls:
-                problem_html += f'<img src="{url}" style="max-width:100%;margin:4px 0;" />'
+                problem_html += (
+                    f'<a href="{url}" target="_blank">'
+                    f'<img src="{url}" style="max-width:100%;margin:4px 0;" />'
+                    f'</a>'
+                )
 
         print(f"[format] problem={len(problem)}chars, latest={len(latest_text)}chars, "
               f"inline_images={len(image_urls)}")
@@ -627,8 +631,8 @@ def main(workorder_id: str = None, password: str = None, account: str = None,
 
 if __name__ == "__main__":
     # ↓↓↓ IDE F5 运行时可修改 ↓↓↓
-    _WORKORDER_ID = "20260610J17132"  # 必填：工单编号
-    _ASSIGNED_TO  = "yangfangfang"         # 选填：留空时指派给 = account；填写后覆盖 account
+    _WORKORDER_ID = "20260615U28867"  # 必填：工单编号
+    _ASSIGNED_TO  = "dengchang"         # 选填：留空时指派给 = account；填写后覆盖 account
 
     # 入口分支：
     #   - 有 argv：CLI 显式传参，直接走 main()
