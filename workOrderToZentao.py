@@ -16,14 +16,14 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-from zantao import ZenTaoClient, ACCOUNT
+from zantao import ZenTaoClient
 from workorder_extractor import (
     WorkOrderExtractor as PlaywrightExtractor,
     SCREENSHOTS_DIR,
     IMAGES_DIR,
 )
 import workorder_extractor
-from config_loader import load_config, ensure_credentials, ZENTAO_URL, EXECUTION_ID
+from config_loader import load_config, ensure_credentials, ZENTAO_URL, EXECUTION_ID, ACCOUNT
 
 # -------------------------- 配置参数 --------------------------
 
@@ -631,8 +631,8 @@ def main(workorder_id: str = None, password: str = None, account: str = None,
 
 if __name__ == "__main__":
     # ↓↓↓ IDE F5 运行时可修改 ↓↓↓
-    _WORKORDER_ID = "20260615U28867"  # 必填：工单编号
-    _ASSIGNED_TO  = "dengchang"         # 选填：留空时指派给 = account；填写后覆盖 account
+    _WORKORDER_ID = "20260713M8263"  # 必填：工单编号
+    _ASSIGNED_TO  = "chenshaopeng"         # 选填：留空时指派给 = account；填写后覆盖 account
 
     # 入口分支：
     #   - 有 argv：CLI 显式传参，直接走 main()

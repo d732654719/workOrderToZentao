@@ -2,10 +2,10 @@
 import json, requests, re, sys, hashlib
 sys.stdout.reconfigure(encoding='utf-8')
 
-from config_loader import load_config, ensure_credentials, ZENTAO_URL
+from config_loader import load_config, ensure_credentials, ZENTAO_URL, ACCOUNT
 _zcfg = ensure_credentials(load_config()).get("zentao", {})
 PWD = _zcfg.get("password", "")
-ACCOUNT = _zcfg.get("account", "dengchang")
+account = _zcfg.get("account", ACCOUNT)  # 优先使用配置文件，否则使用默认账号
 
 s = requests.Session()
 
@@ -16,7 +16,7 @@ PWD_LEN = str(len(PWD))
 r = s.get(f'{ZENTAO_URL}/api-getsessionid.json')
 sid = json.loads(json.loads(r.text)['data'])['sessionID']
 s.post(f'{ZENTAO_URL}/user-login.json?zentaosid={sid}',
-       data={'account': ACCOUNT, 'password': PWD})
+       data={'account': account, 'password': PWD})
 print('Login OK')
 
 # 获取改密页面，提取 verifyRand
@@ -37,7 +37,7 @@ print(f'Hashed pwd = {pwd_hashed}')
 # 提交改密表单 — 使用MD5加密的密码
 r = s.post(f'{ZENTAO_URL}/my-changePassword.html?zentaosid={sid}',
     data={
-        'account': ACCOUNT,
+        'account': account,
         'originalPassword': PWD_MD5,  # MD5 of current password
         'password1': pwd_hashed,      # MD5(password) + length
         'password2': pwd_hashed,

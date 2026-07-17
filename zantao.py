@@ -11,9 +11,7 @@ import time
 from urllib.parse import unquote, urlparse
 
 import requests
-
-ZENTAO_URL = "http://zentao.hlong.cc/zentao"
-ACCOUNT = "dengchang"
+from config_loader import ZENTAO_URL, ACCOUNT
 
 # 图片扩展名 → MIME 类型映射（供文件上传和附件预览使用）
 MIME_MAP = {

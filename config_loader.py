@@ -14,9 +14,10 @@ from pathlib import Path
 
 CONFIG_FILE = Path(__file__).parent / "config.json"
 
-# 固定值：禅道系统地址 / 执行ID 是部署级配置，不参与凭证输入
+# 固定值：禅道系统地址 / 执行ID / 默认账号 是部署级配置，不参与凭证输入
 ZENTAO_URL = "http://zentao.hlong.cc/zentao"
 EXECUTION_ID = 162  # 分部非标
+ACCOUNT = "dengchang"  # 默认账号
 
 # 各字段：(key, 标签, 默认值) —— 仅账号 / 密码
 _WORKORDER_FIELDS = [
@@ -24,7 +25,7 @@ _WORKORDER_FIELDS = [
     ("password", "密码", ""),
 ]
 _ZENTAO_FIELDS = [
-    ("account",  "账号", "dengchang"),
+    ("account",  "账号", ACCOUNT),
     ("password", "密码", ""),
 ]
 
